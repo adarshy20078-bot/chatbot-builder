@@ -159,6 +159,66 @@ export default async function handler(req, res) {
     }
 
     if (text && from) {
+      // 1. Detect if this is an automated website order confirmation message
+      const isWebsiteOrder = text.includes("I would like to place an order for the following items") || 
+                             text.includes("place an order for the following items");
+
+      if (isWebsiteOrder) {
+        console.log(`Detected website order from ${from}`);
+        
+        let orderDetails = text.replace(/Hi Pooja Furniture Team,\s*/i, "")
+                              .replace(/Please contact me back\.\s*Thanks!?/i, "")
+                              .trim();
+        
+        const leadJson = {
+          action: 'save_lead',
+          name: 'Website Customer',
+          phone: from,
+          address: 'Check Website Admin / Order Details',
+          details: `Website Order: ${orderDetails}`
+        };
+
+        const aiResponse = "Thank you for placing your order with Pooja Furniture! We have received your order details. Our team will contact you shortly to confirm your delivery details and process your order. If you need any immediate assistance, you can also reach us directly at 9742266219.";
+
+        let saveLeadPromise = Promise.resolve();
+        if (GOOGLE_SHEETS_URL) {
+          saveLeadPromise = saveBookingToGoogleSheets(leadJson);
+        }
+
+        let saveHistoryPromise = Promise.resolve();
+        if (GOOGLE_SHEETS_URL) {
+          saveHistoryPromise = postToGoogleSheets(GOOGLE_SHEETS_URL, {
+            action: "append_history",
+            phone: from,
+            turns: [
+              { role: "user", content: text },
+              { role: "model", content: aiResponse }
+            ]
+          }).catch(histErr => console.error('Failed to save history:', histErr));
+        }
+
+        let sendPromise = Promise.resolve();
+        if (provider === 'aisensy') {
+          const AISENSY_PROJECT_ID = process.env.AISENSY_PROJECT_ID;
+          const AISENSY_API_PWD = process.env.AISENSY_API_PWD;
+          sendPromise = sendAiSensyMessage(AISENSY_PROJECT_ID, AISENSY_API_PWD, from, aiResponse);
+        } else {
+          sendPromise = sendWhatsAppMessage(phone_number_id, from, aiResponse);
+        }
+
+        try {
+          await Promise.all([
+            sendPromise,
+            saveLeadPromise,
+            saveHistoryPromise
+          ]);
+          return res.status(200).send('EVENT_RECEIVED');
+        } catch (error) {
+          console.error('Error handling website order webhook:', error);
+          return res.status(200).send('EVENT_RECEIVED');
+        }
+      }
+
       try {
         // Fetch chat history from Google Sheets (stateless memory)
         let history = [];

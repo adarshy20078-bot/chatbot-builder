@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.14.0",
-    "axios": "^1.7.2"
+    "axios": "^1.7.2",
+    "vercel": "^56.3.1"
   }
 }

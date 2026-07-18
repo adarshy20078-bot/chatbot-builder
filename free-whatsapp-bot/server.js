@@ -246,6 +246,62 @@ client.on('message', async (msg) => {
 
     console.log(`Received message from ${from}: ${text}`);
 
+    // Detect if this is an automated website order confirmation message
+    const isWebsiteOrder = text.includes("I would like to place an order for the following items") || 
+                           text.includes("place an order for the following items");
+
+    if (isWebsiteOrder) {
+        console.log(`Detected website order from ${from}`);
+        try {
+            let orderDetails = text.replace(/Hi Pooja Furniture Team,\s*/i, "")
+                                  .replace(/Please contact me back\.\s*Thanks!?/i, "")
+                                  .trim();
+            
+            const leadJson = {
+                action: 'save_lead',
+                name: 'Website Customer',
+                phone: from,
+                address: 'Check Website Admin / Order Details',
+                details: `Website Order: ${orderDetails}`
+            };
+
+            const aiResponse = "Thank you for placing your order with Pooja Furniture! We have received your order details. Our team will contact you shortly to confirm your delivery details and process your order. If you need any immediate assistance, you can also reach us directly at 9742266219.";
+
+            let saveLeadPromise = Promise.resolve();
+            if (GOOGLE_SHEETS_URL) {
+                saveLeadPromise = axios.post(GOOGLE_SHEETS_URL, leadJson, {
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+
+            let saveHistoryPromise = Promise.resolve();
+            if (GOOGLE_SHEETS_URL) {
+                saveHistoryPromise = axios.post(GOOGLE_SHEETS_URL, {
+                    action: "append_history",
+                    phone: from,
+                    turns: [
+                        { role: "user", content: text },
+                        { role: "model", content: aiResponse }
+                    ]
+                }, {
+                    headers: { 'Content-Type': 'application/json' }
+                }).catch(histErr => console.error('Failed to save history:', histErr.message));
+            }
+
+            await Promise.all([
+                client.sendMessage(msg.from, aiResponse),
+                saveLeadPromise,
+                saveHistoryPromise
+            ]);
+
+            console.log(`Successfully handled website order for ${from}`);
+            return;
+        } catch (err) {
+            console.error('Error handling website order in bot:', err.message || err);
+            return;
+        }
+    }
+
     try {
         let history = [];
         let botStatus = 'active';

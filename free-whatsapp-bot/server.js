@@ -121,6 +121,7 @@ const client = new Client({
     authStrategy: new LocalAuth({
         dataPath: './.wwebjs_auth'
     }),
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     puppeteer: {
         headless: true,
         args: [
@@ -172,6 +173,10 @@ const client = new Client({
 client.on('qr', (qr) => {
     console.log('QR Code generated. Scan now!');
     qrCodeData = qr;
+});
+
+client.on('authenticated', () => {
+    console.log('WhatsApp Web Chatbot client is AUTHENTICATED successfully!');
 });
 
 client.on('ready', () => {

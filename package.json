@@ -1,0 +1,14 @@
+{
+  "name": "whatsapp-chatbot-vercel",
+  "version": "1.0.0",
+  "description": "24/7 WhatsApp Chatbot running on Vercel Serverless Functions with Gemini AI",
+  "main": "api/webhook.js",
+  "type": "module",
+  "scripts": {
+    "start": "node api/webhook.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.14.0",
+    "axios": "^1.7.2"
+  }
+}

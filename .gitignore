@@ -1,0 +1,7 @@
+node_modules
+.env
+.vercel
+.env*
+khoj_download/
+flint_download/
+pooja-furniture-chatbot/

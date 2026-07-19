@@ -170,20 +170,7 @@ export default async function handler(req, res) {
                               .replace(/Please contact me back\.\s*Thanks!?/i, "")
                               .trim();
         
-        const leadJson = {
-          action: 'save_lead',
-          name: 'Website Customer',
-          phone: from,
-          address: 'Check Website Admin / Order Details',
-          details: `Website Order: ${orderDetails}`
-        };
-
-        const aiResponse = "Thank you for placing your order with Pooja Furniture! We have received your order details. Our team will contact you shortly to confirm your delivery details and process your order. If you need any immediate assistance, you can also reach us directly at 9742266219.";
-
-        let saveLeadPromise = Promise.resolve();
-        if (GOOGLE_SHEETS_URL) {
-          saveLeadPromise = saveBookingToGoogleSheets(leadJson);
-        }
+        const aiResponse = "Thank you for placing your order with Pooja Furniture! We have received your order details.\n\nTo complete your order, please reply with your:\n1. Full Name\n2. Phone Number\n3. Delivery Address";
 
         let saveHistoryPromise = Promise.resolve();
         if (GOOGLE_SHEETS_URL) {
@@ -209,7 +196,6 @@ export default async function handler(req, res) {
         try {
           await Promise.all([
             sendPromise,
-            saveLeadPromise,
             saveHistoryPromise
           ]);
           return res.status(200).send('EVENT_RECEIVED');

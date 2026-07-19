@@ -225,6 +225,79 @@ export default async function handler(req, res) {
           }
         }
 
+        // Check if the customer is replying with their contact details for a website order
+        const modelMessages = history.filter(h => h.role === 'model');
+        const lastModelMsg = modelMessages[modelMessages.length - 1];
+        const lastModelText = lastModelMsg ? (lastModelMsg.content || lastModelMsg.parts?.[0]?.text || '') : '';
+        const isReplyingToOrderDetails = lastModelText.includes("To complete your order, please reply with your:");
+
+        if (isReplyingToOrderDetails) {
+          console.log(`Detected contact details response from website customer ${from}`);
+          
+          let orderText = 'See Website Admin';
+          const userMessages = history.filter(h => h.role === 'user');
+          const orderMsg = userMessages.find(h => {
+            const txt = h.content || h.parts?.[0]?.text || '';
+            return txt.includes("I would like to place an order") || txt.includes("place an order for the following items");
+          });
+          if (orderMsg) {
+            const rawText = orderMsg.content || orderMsg.parts?.[0]?.text || '';
+            orderText = rawText.replace(/Hi Pooja Furniture Team,\s*/i, "")
+                               .replace(/Please contact me back\.\s*Thanks!?/i, "")
+                               .trim();
+          }
+
+          const extractedData = await extractOrderLeadDetails(text);
+          
+          const leadJson = {
+            action: 'save_lead',
+            name: extractedData.name || 'Website Customer',
+            phone: extractedData.phone || from,
+            address: extractedData.address || 'N/A',
+            details: `Website Order: ${orderText}`
+          };
+
+          const aiResponse = "Thank you! We have received your delivery details. Our showroom team will contact you shortly to confirm the delivery schedule and process your order. If you need any immediate assistance, please call us at 9742266219.";
+
+          let saveLeadPromise = Promise.resolve();
+          if (GOOGLE_SHEETS_URL) {
+            saveLeadPromise = saveBookingToGoogleSheets(leadJson);
+          }
+
+          let saveHistoryPromise = Promise.resolve();
+          if (GOOGLE_SHEETS_URL) {
+            saveHistoryPromise = postToGoogleSheets(GOOGLE_SHEETS_URL, {
+              action: "append_history",
+              phone: from,
+              turns: [
+                { role: "user", content: text },
+                { role: "model", content: aiResponse }
+              ]
+            }).catch(histErr => console.error('Failed to save history:', histErr));
+          }
+
+          let sendPromise = Promise.resolve();
+          if (provider === 'aisensy') {
+            const AISENSY_PROJECT_ID = process.env.AISENSY_PROJECT_ID;
+            const AISENSY_API_PWD = process.env.AISENSY_API_PWD;
+            sendPromise = sendAiSensyMessage(AISENSY_PROJECT_ID, AISENSY_API_PWD, from, aiResponse);
+          } else {
+            sendPromise = sendWhatsAppMessage(phone_number_id, from, aiResponse);
+          }
+
+          try {
+            await Promise.all([
+              sendPromise,
+              saveLeadPromise,
+              saveHistoryPromise
+            ]);
+            return res.status(200).send('EVENT_RECEIVED');
+          } catch (error) {
+            console.error('Error handling website order details response:', error);
+            return res.status(200).send('EVENT_RECEIVED');
+          }
+        }
+
         // If the AI auto-reply is paused for this contact, skip generating Gemini response
         if (botStatus === 'paused') {
           console.log(`Auto-reply is paused for ${from}. Skipping bot response.`);
@@ -363,6 +436,31 @@ async function getGeminiResponse(userInput, history) {
   } catch (error) {
     console.error('Gemini SDK Error:', error.message || error);
     return "I'm sorry, I'm experiencing technical difficulties. Please try again later.";
+  }
+}
+
+// Helper: Extract name, phone, and address using Gemini
+async function extractOrderLeadDetails(userInput) {
+  try {
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      systemInstruction: "You are an entity extraction assistant. Extract the customer's Name, Phone Number, and Delivery Address from the input text. Return ONLY a valid JSON object with the keys 'name', 'phone', and 'address'. Do not write any markdown code fences, explanation, or other text. Example: {\"name\": \"John Doe\", \"phone\": \"1234567890\", \"address\": \"123 Main St\"}"
+    });
+
+    const result = await model.generateContent(userInput);
+    const responseText = result.response.text().trim();
+    const cleanJsonText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleanJsonText);
+    return parsed;
+  } catch (err) {
+    console.error('Failed to extract lead details using Gemini:', err);
+    const parts = userInput.split(',');
+    return {
+      name: parts[0]?.trim() || 'Website Customer',
+      phone: parts[1]?.trim() || '',
+      address: parts[2]?.trim() || 'N/A'
+    };
   }
 }
 

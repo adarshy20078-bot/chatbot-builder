@@ -540,8 +540,32 @@ export default async function handler(req, res) {
           return res.status(200).send('EVENT_RECEIVED');
         }
 
+        let customInstruction = "";
+        const modelMessages = history.filter(h => h.role === 'model');
+        const lastModelMsg = modelMessages[modelMessages.length - 1];
+        const lastModelText = lastModelMsg ? (lastModelMsg.content || lastModelMsg.parts?.[0]?.text || '') : '';
+        const isReplyingToAddress = lastModelText.includes("Please provide your complete delivery address.");
+
+        if (isReplyingToAddress) {
+          const distance = await getDistanceToShowroom(text);
+          if (distance !== null) {
+            if (distance > 27) {
+              customInstruction = "\nIMPORTANT: The customer's address is verified to be outside our 27 km delivery radius. You MUST politely tell them that we only deliver within a 27 km radius of Pooja Furniture, offer store pickup or pickup alternatives, and stop the order workflow.";
+            } else {
+              customInstruction = "\nIMPORTANT: The customer's address is verified to be within our 27 km delivery radius. Say 'Great! Delivery is available for your location.' and proceed to the next step (Landmark).";
+            }
+          } else {
+            const lowerAddr = text.toLowerCase();
+            const outsideKeywords = ["mumbai", "delhi", "pune", "chennai", "hyderabad", "maharashtra", "andheri", "borivali", "kolkata", "noida", "gurgaon", "gujarat", "rajasthan"];
+            const isOutside = outsideKeywords.some(kw => lowerAddr.includes(kw)) && !lowerAddr.includes("bangalore") && !lowerAddr.includes("bengaluru");
+            if (isOutside) {
+              customInstruction = "\nIMPORTANT: The customer's address is verified to be outside our 27 km delivery radius. You MUST politely tell them that we only deliver within a 27 km radius of Pooja Furniture, offer store pickup or pickup alternatives, and stop the order workflow.";
+            }
+          }
+        }
+
         // Generate AI response using Gemini API with history
-        let aiResponse = await getGeminiResponse(text, history);
+        let aiResponse = await getGeminiResponse(text, history, customInstruction);
 
         // Check if the response contains a JSON block
         const jsonRegex = /(\{[\s\S]*?"(name|product|address)"[\s\S]*?\})/s;
@@ -631,12 +655,12 @@ export default async function handler(req, res) {
 }
 
 // Helper: Call Gemini API using the official SDK with history context
-async function getGeminiResponse(userInput, history) {
+async function getGeminiResponse(userInput, history, customInstruction = "") {
   try {
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({
       model: "gemini-3.1-flash-lite",
-      systemInstruction: BOT_SYSTEM_INSTRUCTION
+      systemInstruction: BOT_SYSTEM_INSTRUCTION + (customInstruction ? "\n" + customInstruction : "")
     });
 
     // Clean and validate history for Gemini SDK requirements:
@@ -717,6 +741,38 @@ async function extractOrderLeadDetails(userInput) {
       address: parts[2]?.trim() || 'N/A'
     };
   }
+}
+
+// Helper: Calculate straight-line distance in km using Haversine formula
+function getHaversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Helper: Get geocode coordinates from OpenStreetMap Nominatim and calculate distance
+async function getDistanceToShowroom(addressText) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(addressText)}&format=json&limit=1`;
+    const res = await axios.get(url, {
+      headers: { 'User-Agent': 'PoojaFurnitureBot/1.0' }
+    });
+    if (res.data && res.data.length > 0) {
+      const lat = parseFloat(res.data[0].lat);
+      const lon = parseFloat(res.data[0].lon);
+      const showroomLat = 12.9863;
+      const showroomLon = 77.6973;
+      return getHaversineDistance(showroomLat, showroomLon, lat, lon);
+    }
+  } catch (err) {
+    console.error('Failed to calculate distance for address:', addressText, err.message);
+  }
+  return null;
 }
 
 // Helper: POST data to Google Apps Script Web App (Axios automatically handles the 302 redirect via GET to return response)

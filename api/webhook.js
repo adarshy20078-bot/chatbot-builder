@@ -541,8 +541,8 @@ export default async function handler(req, res) {
         }
 
         let customInstruction = "";
-        const modelMessages = history.filter(h => h.role === 'model');
-        const lastModelMsg = modelMessages[modelMessages.length - 1];
+        const modelMsgs = history.filter(h => h.role === 'model');
+        const lastModelMsg = modelMsgs[modelMsgs.length - 1];
         const lastModelText = lastModelMsg ? (lastModelMsg.content || lastModelMsg.parts?.[0]?.text || '') : '';
         const isReplyingToAddress = lastModelText.includes("Please provide your complete delivery address.");
 

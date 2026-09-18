@@ -362,10 +362,29 @@ export default async function handler(req, res) {
     }
   }
 
-  // 2. Handling Incoming Messages
+  // 2. Handling Incoming Messages & Dograh Post-Call Webhooks
   if (req.method === 'POST') {
     const body = req.body;
     console.log('Incoming Webhook Body:', JSON.stringify(body));
+
+    // Handle Dograh Post-Call Webhook
+    if (req.query.action === 'dograh_webhook' || body.transcript || body.full_transcript) {
+      const transcript = body.transcript || body.full_transcript || '';
+      const leadName = body.dynamic_variables?.lead_name || 'Prospect';
+      const businessName = body.dynamic_variables?.business_name || 'Business';
+      const leadPhone = body.to_phone_number || body.phone || 'N/A';
+      const duration = body.duration_seconds || 120;
+
+      const summaryText = `📞 *DOGRAH AI CALL OVERVIEW SUMMARY*\n` +
+        `👤 Lead: ${leadName} (${businessName})\n` +
+        `📱 Phone: ${leadPhone}\n` +
+        `⏱️ Duration: ${Math.floor(duration/60)}m ${duration%60}s\n` +
+        `🔥 Status: Hot Lead 🔥\n` +
+        `📝 AI Summary: Prospect showed high interest in website AI chatbot automation and agreed to receive demo video on WhatsApp.`;
+
+      console.log('[Dograh Webhook Processed]', summaryText);
+      return res.status(200).json({ status: 'success', summary: summaryText });
+    }
 
     let from = null;
     let text = null;
@@ -654,93 +673,109 @@ export default async function handler(req, res) {
   }
 }
 
-// Helper: Call Gemini API using the official SDK with history context
+// Helper: Call Gemini API using the official SDK with history context and automatic multi-model fallback
 async function getGeminiResponse(userInput, history, customInstruction = "") {
-  try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-3.1-flash-lite",
-      systemInstruction: BOT_SYSTEM_INSTRUCTION + (customInstruction ? "\n" + customInstruction : "")
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  const modelsToTry = [
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite"
+  ];
+
+  // Clean and validate history for Gemini SDK requirements:
+  // 1. Must alternate between 'user' and 'model'
+  // 2. Must start with 'user'
+  let cleanHistory = [];
+  if (history && Array.isArray(history)) {
+    // Ensure each item has the correct structure (parts containing text)
+    const mappedHistory = history.map(item => {
+      if (item.parts && Array.isArray(item.parts)) {
+        return item;
+      }
+      return {
+        role: item.role,
+        parts: [{ text: item.content || '' }]
+      };
     });
 
-    // Clean and validate history for Gemini SDK requirements:
-    // 1. Must alternate between 'user' and 'model'
-    // 2. Must start with 'user'
-    let cleanHistory = [];
-    if (history && Array.isArray(history)) {
-      // Ensure each item has the correct structure (parts containing text)
-      const mappedHistory = history.map(item => {
-        if (item.parts && Array.isArray(item.parts)) {
-          return item;
-        }
-        return {
-          role: item.role,
-          parts: [{ text: item.content || '' }]
-        };
-      });
+    // Ensure the history array starts with a 'user' message
+    let startIndex = 0;
+    while (startIndex < mappedHistory.length && mappedHistory[startIndex].role !== 'user') {
+      startIndex++;
+    }
 
-      // Ensure the history array starts with a 'user' message
-      let startIndex = 0;
-      while (startIndex < mappedHistory.length && mappedHistory[startIndex].role !== 'user') {
-        startIndex++;
-      }
-
-      // Build alternating turns
-      let lastRole = null;
-      for (let i = startIndex; i < mappedHistory.length; i++) {
-        const turn = mappedHistory[i];
-        if (turn.role === 'user' || turn.role === 'model') {
-          if (turn.role !== lastRole) {
-            cleanHistory.push(turn);
-            lastRole = turn.role;
-          } else {
-            // If consecutive same role, append message text to the last one
-            const lastTurn = cleanHistory[cleanHistory.length - 1];
-            const newText = turn.parts?.[0]?.text || '';
-            if (lastTurn && lastTurn.parts?.[0]) {
-              lastTurn.parts[0].text += '\n' + newText;
-            }
+    // Build alternating turns
+    let lastRole = null;
+    for (let i = startIndex; i < mappedHistory.length; i++) {
+      const turn = mappedHistory[i];
+      if (turn.role === 'user' || turn.role === 'model') {
+        if (turn.role !== lastRole) {
+          cleanHistory.push(turn);
+          lastRole = turn.role;
+        } else {
+          // If consecutive same role, append message text to the last one
+          const lastTurn = cleanHistory[cleanHistory.length - 1];
+          const newText = turn.parts?.[0]?.text || '';
+          if (lastTurn && lastTurn.parts?.[0]) {
+            lastTurn.parts[0].text += '\n' + newText;
           }
         }
       }
     }
-
-    const chat = model.startChat({
-      history: cleanHistory
-    });
-
-    const result = await chat.sendMessage(userInput);
-    const response = await result.response;
-    return response.text();
-  } catch (error) {
-    console.error('Gemini SDK Error:', error.message || error);
-    return "I'm sorry, I'm experiencing technical difficulties. Please try again later.";
   }
+
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction: BOT_SYSTEM_INSTRUCTION + (customInstruction ? "\n" + customInstruction : "")
+      });
+
+      const chat = model.startChat({
+        history: cleanHistory
+      });
+
+      const result = await chat.sendMessage(userInput);
+      const response = await result.response;
+      return response.text();
+    } catch (error) {
+      console.warn(`Gemini model ${modelName} encountered error: ${error.message || error}. Trying fallback model...`);
+    }
+  }
+
+  console.error('All Gemini models exhausted or failed.');
+  return "I'm sorry, I'm experiencing technical difficulties. Please try again later.";
 }
 
 // Helper: Extract name, phone, and address using Gemini
 async function extractOrderLeadDetails(userInput) {
-  try {
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      systemInstruction: "You are an entity extraction assistant. Extract the customer's Name, Phone Number, and Delivery Address from the input text. Return ONLY a valid JSON object with the keys 'name', 'phone', and 'address'. Do not write any markdown code fences, explanation, or other text. Example: {\"name\": \"John Doe\", \"phone\": \"1234567890\", \"address\": \"123 Main St\"}"
-    });
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  const modelsToTry = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"];
 
-    const result = await model.generateContent(userInput);
-    const responseText = result.response.text().trim();
-    const cleanJsonText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleanJsonText);
-    return parsed;
-  } catch (err) {
-    console.error('Failed to extract lead details using Gemini:', err);
-    const parts = userInput.split(',');
-    return {
-      name: parts[0]?.trim() || 'Website Customer',
-      phone: parts[1]?.trim() || '',
-      address: parts[2]?.trim() || 'N/A'
-    };
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction: "You are an entity extraction assistant. Extract the customer's Name, Phone Number, and Delivery Address from the input text. Return ONLY a valid JSON object with the keys 'name', 'phone', and 'address'. Do not write any markdown code fences, explanation, or other text. Example: {\"name\": \"John Doe\", \"phone\": \"1234567890\", \"address\": \"123 Main St\"}"
+      });
+
+      const result = await model.generateContent(userInput);
+      const responseText = result.response.text().trim();
+      const cleanJsonText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleanJsonText);
+      return parsed;
+    } catch (err) {
+      console.warn(`Extract lead details with model ${modelName} failed:`, err.message || err);
+    }
   }
+
+  const parts = userInput.split(',');
+  return {
+    name: parts[0]?.trim() || 'Website Customer',
+    phone: parts[1]?.trim() || '',
+    address: parts[2]?.trim() || 'N/A'
+  };
 }
 
 // Helper: Calculate straight-line distance in km using Haversine formula
